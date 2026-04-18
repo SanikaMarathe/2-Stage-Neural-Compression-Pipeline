@@ -1,0 +1,10 @@
+version: "3.9"
+services:
+  ocr-service:
+    build: ./ocr-service
+    ports:
+      - "8001:8001"
+  huffman-service:
+    build: ./huffman-service
+    ports:
+      - "8002:8002"

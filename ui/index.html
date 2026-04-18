@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Neural Compression Demo</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #0a0a0a;
+  color: #fff;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.app { max-width: 1000px; margin: 0 auto; }
+
+/* ── Header ── */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid #1f1f1f;
+  margin-bottom: 24px;
+}
+.header-dot { width: 10px; height: 10px; border-radius: 50%; background: #fff; flex-shrink: 0; }
+.header h1 { font-size: 14px; font-weight: 600; letter-spacing: 3px; text-transform: uppercase; }
+.header-sub { font-size: 11px; color: #777; letter-spacing: 1px; margin-left: auto; }
+
+/* ── Layout ── */
+.layout { display: grid; grid-template-columns: 240px 1fr; gap: 16px; }
+
+/* ── Sidebar ── */
+.sidebar { display: flex; flex-direction: column; gap: 12px; }
+
+.upload-zone {
+  background: #111;
+  border: 1.5px dashed #2a2a2a;
+  border-radius: 8px;
+  padding: 28px 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  user-select: none;
+}
+.upload-zone:hover { border-color: #444; background: #141414; }
+.upload-zone.drag-over { border-color: #fff; background: #161616; }
+.upload-icon { font-size: 24px; opacity: 0.35; margin-bottom: 10px; }
+.upload-zone p { color: #555; font-size: 11px; line-height: 1.7; }
+.upload-zone .hint { color: #333; font-size: 10px; margin-top: 4px; }
+#file-input { display: none; }
+
+.preview-wrap {
+  background: #111;
+  border: 1px solid #1f1f1f;
+  border-radius: 8px;
+  overflow: hidden;
+  display: none;
+}
+.preview-wrap.visible { display: block; }
+#preview-img { width: 100%; display: block; }
+
+.run-btn {
+  background: #fff;
+  color: #000;
+  border: none;
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+  width: 100%;
+}
+.run-btn:hover:not(:disabled) { background: #e0e0e0; }
+.run-btn:disabled { background: #1f1f1f; color: #444; cursor: not-allowed; }
+
+.pipeline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pipe-step {
+  background: #1a1a1a;
+  border: 1px solid #222;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: #444;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  transition: border-color 0.2s, color 0.2s;
+}
+.pipe-step.active { border-color: #fff; color: #fff; }
+.pipe-arrow { color: #2a2a2a; font-size: 11px; }
+
+.status-line { font-size: 10px; color: #888; text-align: center; letter-spacing: 0.5px; }
+
+/* ── Pipeline log ── */
+.pipeline-log {
+  background: #0d0d0d;
+  border: 1px solid #1a1a1a;
+  border-radius: 8px;
+  padding: 16px 18px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 12px;
+  line-height: 1.9;
+  display: none;
+  min-height: 120px;
+}
+.pipeline-log.visible { display: block; }
+.log-line { opacity: 0; transform: translateY(4px); transition: opacity 0.2s, transform 0.2s; }
+.log-line.show { opacity: 1; transform: translateY(0); }
+.log-line.step  { color: #555; }
+.log-line.ok    { color: #fff; }
+.log-line.done  { color: #4ade80; }
+.log-line.warn  { color: #f87171; }
+
+/* ── Accuracy card ── */
+.accuracy-card {
+  background: #111;
+  border: 1px solid #1f1f1f;
+  border-radius: 8px;
+  padding: 14px;
+}
+.accuracy-card .panel-label { color: #444; font-size: 9px; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 10px; }
+.acc-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+.acc-row:last-child { margin-bottom: 0; }
+.acc-name { color: #555; font-size: 10px; }
+.acc-value { color: #fff; font-size: 12px; font-weight: 700; }
+
+/* ── Results ── */
+.results { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+.empty-state {
+  background: #111;
+  border: 1px solid #1a1a1a;
+  border-radius: 8px;
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #2a2a2a;
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+.empty-icon { font-size: 28px; }
+
+.results-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.results-row.hidden { display: none; }
+
+.panel {
+  background: #111;
+  border: 1px solid #1f1f1f;
+  border-radius: 8px;
+  padding: 18px;
+}
+.panel-label {
+  color: #444;
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
+
+/* OCR panel */
+.ocr-digits {
+  color: #fff;
+  font-size: 34px;
+  font-weight: 800;
+  letter-spacing: 10px;
+  margin-bottom: 10px;
+  font-variant-numeric: tabular-nums;
+  min-height: 44px;
+}
+.ocr-meta { display: flex; gap: 14px; }
+.ocr-meta span { color: #444; font-size: 10px; }
+.ocr-meta strong { color: #888; }
+
+/* Compression panel */
+.metric-list { display: flex; flex-direction: column; gap: 9px; }
+.metric-row { display: flex; justify-content: space-between; align-items: baseline; }
+.metric-name { color: #888; font-size: 10px; }
+.metric-value { color: #fff; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Bitstream panel */
+.b64-block {
+  background: #0d0d0d;
+  border: 1px solid #161616;
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-top: 8px;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 10px;
+  color: #444;
+  word-break: break-all;
+  line-height: 1.7;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+/* Round-trip panel */
+.roundtrip-text {
+  color: #fff;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 6px;
+  margin-bottom: 12px;
+  min-height: 28px;
+}
+.match-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  padding: 4px 10px;
+  border-radius: 4px;
+}
+.match-badge.ok { background: #0d1f0d; color: #4ade80; border: 1px solid #1a3a1a; }
+.match-badge.fail { background: #1f0d0d; color: #f87171; border: 1px solid #3a1a1a; }
+
+/* Error */
+.error-msg {
+  background: #1f0d0d;
+  border: 1px solid #3a1a1a;
+  border-radius: 8px;
+  padding: 16px 18px;
+  color: #f87171;
+  font-size: 11px;
+  line-height: 1.6;
+  display: none;
+}
+.error-msg.visible { display: block; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="header">
+    <div class="header-dot"></div>
+    <h1>Neural Compression</h1>
+    <span class="header-sub">CNN OCR → FGK Adaptive Huffman</span>
+  </div>
+
+  <div class="layout">
+    <div class="sidebar">
+      <div class="upload-zone" id="upload-zone" role="button" tabindex="0" aria-label="Upload digit image">
+        <div class="upload-icon">⬆</div>
+        <p>Drop a handwritten digit image here, or click to browse</p>
+        <p class="hint">PNG · JPEG</p>
+      </div>
+      <input type="file" id="file-input" accept="image/png,image/jpeg">
+
+      <div class="preview-wrap" id="preview-wrap">
+        <img id="preview-img" alt="Selected image">
+      </div>
+
+      <button class="run-btn" id="run-btn" disabled>Run Pipeline</button>
+      <button class="run-btn" id="sample-btn" style="background:#1a1a1a;color:#888;border:1px solid #2a2a2a;margin-top:-4px">Load MNIST Sample</button>
+
+      <div class="pipeline">
+        <div class="pipe-step" id="step-ocr">OCR</div>
+        <div class="pipe-arrow">→</div>
+        <div class="pipe-step" id="step-huffman">Huffman</div>
+      </div>
+
+      <div class="status-line" id="status-line">Select an image to begin</div>
+
+      <div class="accuracy-card" id="accuracy-card" style="display:none">
+        <div class="panel-label">Accuracy — This Image vs Ground Truth</div>
+        <div style="font-size:36px;font-weight:800;color:#fff;margin-bottom:6px" id="acc-clean">—</div>
+        <div class="acc-row" style="margin-bottom:10px"><span class="acc-name" id="acc-fraction"></span></div>
+        <div id="acc-gt-section">
+          <div style="border-top:1px solid #1f1f1f;margin:8px 0"></div>
+          <div class="panel-label" style="margin-bottom:6px">Ground Truth</div>
+          <div style="color:#fff;font-size:14px;font-weight:700;letter-spacing:4px;margin-bottom:8px" id="acc-gt">—</div>
+          <div class="panel-label" style="margin-bottom:6px">Predicted</div>
+          <div style="font-size:14px;font-weight:700;letter-spacing:4px" id="acc-pred">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="results" id="results">
+      <div class="empty-state" id="empty-state">
+        <div class="empty-icon">◻</div>
+        <span>Results appear here after running the pipeline</span>
+      </div>
+
+      <div class="pipeline-log" id="pipeline-log"></div>
+
+      <div class="error-msg" id="error-msg"></div>
+
+      <div class="results-row hidden" id="row-top">
+        <div class="panel" id="panel-ocr">
+          <div class="panel-label">OCR Output</div>
+          <div class="ocr-digits" id="ocr-digits"></div>
+          <div class="ocr-meta">
+            <span><strong id="ocr-count">—</strong> digits</span>
+            <span><strong id="ocr-ms">—</strong> ms inference</span>
+          </div>
+        </div>
+        <div class="panel" id="panel-compress">
+          <div class="panel-label">Compression</div>
+          <div class="metric-list">
+            <div class="metric-row"><span class="metric-name">Ratio (compressed / original)</span><span class="metric-value" id="m-ratio">—</span></div>
+            <div class="metric-row"><span class="metric-name">Shannon entropy (bits/symbol)</span><span class="metric-value" id="m-entropy">—</span></div>
+            <div class="metric-row"><span class="metric-name">Avg bits / symbol</span><span class="metric-value" id="m-avgbits">—</span></div>
+            <div class="metric-row"><span class="metric-name">Encoding efficiency</span><span class="metric-value" id="m-efficiency">—</span></div>
+            <div class="metric-row"><span class="metric-name">Original → Compressed</span><span class="metric-value" id="m-bytes">—</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="results-row hidden" id="row-bottom">
+        <div class="panel">
+          <div class="panel-label">Compressed Bitstream (base64)</div>
+          <div class="b64-block" id="b64-output"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-label">Round-trip Verification</div>
+          <div class="roundtrip-text" id="rt-text"></div>
+          <div class="match-badge" id="match-badge"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+<script>
+const OCR_URL = 'http://localhost:8001';
+const HUF_URL = 'http://localhost:8002';
+
+
+const pipelineLog = document.getElementById('pipeline-log');
+
+function log(msg, type = 'step') {
+  const line = document.createElement('div');
+  line.className = `log-line ${type}`;
+  line.textContent = msg;
+  pipelineLog.appendChild(line);
+  requestAnimationFrame(() => requestAnimationFrame(() => line.classList.add('show')));
+  pipelineLog.scrollTop = pipelineLog.scrollHeight;
+}
+
+const uploadZone  = document.getElementById('upload-zone');
+const fileInput   = document.getElementById('file-input');
+const previewWrap = document.getElementById('preview-wrap');
+const previewImg  = document.getElementById('preview-img');
+const runBtn      = document.getElementById('run-btn');
+const sampleBtn   = document.getElementById('sample-btn');
+const stepOcr     = document.getElementById('step-ocr');
+const stepHuffman = document.getElementById('step-huffman');
+const statusLine  = document.getElementById('status-line');
+const emptyState  = document.getElementById('empty-state');
+const errorMsg    = document.getElementById('error-msg');
+const rowTop      = document.getElementById('row-top');
+const rowBottom   = document.getElementById('row-bottom');
+
+let selectedFile = null;
+let groundTruth  = null;  // set when loading MNIST sample
+
+// ── File selection ──────────────────────────────────────────────────────────
+
+uploadZone.addEventListener('click', () => fileInput.click());
+
+uploadZone.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
+});
+
+uploadZone.addEventListener('dragover', e => {
+  e.preventDefault();
+  uploadZone.classList.add('drag-over');
+});
+uploadZone.addEventListener('dragleave', e => {
+  if (!uploadZone.contains(e.relatedTarget)) {
+    uploadZone.classList.remove('drag-over');
+  }
+});
+uploadZone.addEventListener('drop', e => {
+  e.preventDefault();
+  uploadZone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) loadFile(file);
+});
+
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) loadFile(fileInput.files[0]);
+});
+
+// ── Load MNIST sample ────────────────────────────────────────────────────────
+
+sampleBtn.addEventListener('click', async () => {
+  sampleBtn.disabled = true;
+  sampleBtn.textContent = 'Loading…';
+  try {
+    const res = await fetch(`${OCR_URL}/test-sample?n=8`);
+    if (!res.ok) throw new Error('Failed to fetch sample');
+    const data = await res.json();
+    groundTruth = data.ground_truth;
+    // Convert base64 PNG to a File object
+    const byteStr = atob(data.image_b64);
+    const arr = new Uint8Array(byteStr.length);
+    for (let i = 0; i < byteStr.length; i++) arr[i] = byteStr.charCodeAt(i);
+    const blob = new Blob([arr], { type: 'image/png' });
+    const file = new File([blob], 'mnist-sample.png', { type: 'image/png' });
+    previewImg.src = `data:image/png;base64,${data.image_b64}`;
+    previewWrap.classList.add('visible');
+    selectedFile = file;
+    runBtn.disabled = false;
+    statusLine.textContent = `MNIST sample loaded · GT: ${groundTruth}`;
+    resetResults();
+  } catch (e) {
+    statusLine.textContent = 'Failed to load sample — is OCR service running?';
+  }
+  sampleBtn.disabled = false;
+  sampleBtn.textContent = 'Load MNIST Sample';
+});
+
+function loadFile(file) {
+  groundTruth = null;  // manual upload has no ground truth
+  selectedFile = file;
+  const reader = new FileReader();
+  reader.onload = e => {
+    previewImg.src = e.target.result;
+    previewWrap.classList.add('visible');
+  };
+  reader.onerror = () => {
+    showError('Could not read the selected file.');
+    runBtn.disabled = true;
+    selectedFile = null;
+  };
+  reader.readAsDataURL(file);
+  runBtn.disabled = false;
+  statusLine.textContent = `Ready · ${file.name}`;
+  resetResults();
+}
+
+// ── Reset state ─────────────────────────────────────────────────────────────
+
+function resetResults() {
+  rowTop.classList.add('hidden');
+  rowBottom.classList.add('hidden');
+  emptyState.style.display = 'flex';
+  errorMsg.classList.remove('visible');
+  stepOcr.classList.remove('active');
+  stepHuffman.classList.remove('active');
+  document.getElementById('accuracy-card').style.display = 'none';
+  pipelineLog.innerHTML = '';
+  pipelineLog.classList.remove('visible');
+}
+
+function showError(msg) {
+  emptyState.style.display = 'none';
+  rowTop.classList.add('hidden');
+  rowBottom.classList.add('hidden');
+  errorMsg.textContent = msg;
+  errorMsg.classList.add('visible');
+}
+
+// ── Pipeline ─────────────────────────────────────────────────────────────────
+
+runBtn.addEventListener('click', runPipeline);
+
+async function runPipeline() {
+  if (!selectedFile) return;
+
+  runBtn.disabled = true;
+  resetResults();
+  emptyState.style.display = 'none';
+  pipelineLog.classList.add('visible');
+  statusLine.textContent = 'Running OCR…';
+  stepOcr.classList.add('active');
+
+  log('▸ Image received: ' + selectedFile.name);
+  log('▸ Segmenting digits with Otsu thresholding + connected components…');
+
+  // ── Stage 1: OCR ──
+  let ocrData;
+  try {
+    const formData = new FormData();
+    formData.append('file', selectedFile);
+    const res = await fetch(`${OCR_URL}/ocr`, { method: 'POST', body: formData });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(`OCR failed (${res.status}): ${err.detail}`);
+    }
+    ocrData = await res.json();
+  } catch (e) {
+    if (e instanceof TypeError) {
+      showError(`Service unavailable — is docker compose up? (tried ${OCR_URL}/ocr)`);
+    } else {
+      showError(e.message);
+    }
+    runBtn.disabled = false;
+    statusLine.textContent = 'Error — see results panel';
+    return;
+  }
+
+  log(`▸ Running CNN inference (468K params, ${ocrData.digit_count} digit${ocrData.digit_count !== 1 ? 's' : ''} detected)…`);
+
+  // Populate OCR card
+  if (!ocrData.text) {
+    log('✗ No digits detected in image.', 'warn');
+    showError('No digits detected in image. Try a clearer handwritten digit image.');
+    runBtn.disabled = false;
+    statusLine.textContent = 'Done — no digits found';
+    return;
+  }
+
+  log(`✓ OCR complete: "${ocrData.text}"  [${ocrData.latency_ms?.toFixed(1)}ms]`, 'ok');
+
+  document.getElementById('ocr-digits').textContent = ocrData.text;
+  document.getElementById('ocr-count').textContent = ocrData.digit_count;
+  document.getElementById('ocr-ms').textContent = typeof ocrData.latency_ms === 'number' ? ocrData.latency_ms.toFixed(1) : '—';
+
+  rowTop.classList.remove('hidden');
+
+  statusLine.textContent = 'Compressing…';
+  stepHuffman.classList.add('active');
+
+  log('▸ Building FGK Adaptive Huffman tree…');
+  log('▸ Encoding symbol stream, updating tree weights per symbol…');
+
+  // ── Stage 2: Compress ──
+  let compressData;
+  try {
+    const res = await fetch(`${HUF_URL}/compress`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: ocrData.text }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(`Compress failed (${res.status}): ${err.detail}`);
+    }
+    compressData = await res.json();
+  } catch (e) {
+    if (e instanceof TypeError) {
+      showError(`Service unavailable — is docker compose up? (tried ${HUF_URL}/compress)`);
+    } else {
+      showError(e.message);
+    }
+    runBtn.disabled = false;
+    statusLine.textContent = 'Error — see results panel';
+    return;
+  }
+
+  log(`✓ Compressed: ${compressData.original_bytes}B → ${compressData.compressed_bytes}B  (ratio ${compressData.ratio?.toFixed(3)}, efficiency ${compressData.efficiency !== undefined ? (compressData.efficiency * 100).toFixed(1) + '%' : '—'})`, 'ok');
+
+  // avg bits/symbol: (compressed_bytes * 8) / original_bytes
+  const avgBits = compressData.original_bytes > 0
+    ? (compressData.compressed_bytes * 8) / compressData.original_bytes
+    : 0;
+
+  document.getElementById('m-ratio').textContent = typeof compressData.ratio === 'number' ? compressData.ratio.toFixed(3) : '—';
+  document.getElementById('m-entropy').textContent = typeof compressData.entropy === 'number' ? compressData.entropy.toFixed(3) : '—';
+  document.getElementById('m-avgbits').textContent = avgBits.toFixed(3);
+  document.getElementById('m-efficiency').textContent = typeof compressData.efficiency === 'number' ? (compressData.efficiency * 100).toFixed(1) + '%' : '—';
+  document.getElementById('m-bytes').textContent =
+    `${compressData.original_bytes} → ${compressData.compressed_bytes} bytes`;
+  document.getElementById('b64-output').textContent = compressData.compressed_b64;
+
+  statusLine.textContent = 'Verifying round-trip…';
+
+  log('▸ Decompressing bitstream to verify losslessness…');
+
+  // ── Stage 3: Decompress ──
+  let decompressData;
+  try {
+    const res = await fetch(`${HUF_URL}/decompress`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ compressed_b64: compressData.compressed_b64 }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(`Decompress failed (${res.status}): ${err.detail}`);
+    }
+    decompressData = await res.json();
+  } catch (e) {
+    if (e instanceof TypeError) {
+      showError(`Service unavailable — is docker compose up? (tried ${HUF_URL}/decompress)`);
+    } else {
+      showError(e.message);
+    }
+    runBtn.disabled = false;
+    statusLine.textContent = 'Error — see results panel';
+    return;
+  }
+
+  const match = decompressData.text === ocrData.text;
+  log(match
+    ? `✓ Round-trip verified: "${decompressData.text}" — lossless ✓`
+    : `✗ Mismatch: got "${decompressData.text}", expected "${ocrData.text}"`,
+    match ? 'done' : 'warn');
+
+  document.getElementById('rt-text').textContent = decompressData.text;
+  const badge = document.getElementById('match-badge');
+  badge.textContent = match ? '✓  Match' : '✗  Mismatch';
+  badge.className = 'match-badge ' + (match ? 'ok' : 'fail');
+
+  rowBottom.classList.remove('hidden');
+
+  stepOcr.classList.remove('active');
+  stepHuffman.classList.remove('active');
+
+  const fmt = v => (v * 100).toFixed(1) + '%';
+  if (groundTruth) {
+    // MNIST sample — compare against known labels
+    const gtDigits   = groundTruth.trim().split(/\s+/);
+    const predDigits = ocrData.text.trim().split(/\s+/);
+    const total      = gtDigits.length;
+    let correct = 0;
+    const predColored = gtDigits.map((g, i) => {
+      const p = predDigits[i] ?? '?';
+      if (p === g) { correct++; return p; }
+      return `[${p}]`;
+    }).join(' ');
+    const accuracy = total > 0 ? correct / total : 0;
+    log(`✓ Accuracy: ${correct}/${total} correct (${fmt(accuracy)}) — GT: ${groundTruth} | Pred: ${ocrData.text}`, accuracy === 1 ? 'done' : 'warn');
+    document.getElementById('acc-clean').textContent = fmt(accuracy);
+    document.getElementById('acc-fraction').textContent = `${correct} of ${total} digits correct`;
+    document.querySelector('#accuracy-card .panel-label').textContent = 'Accuracy — This Image vs Ground Truth';
+    document.getElementById('acc-gt').textContent = groundTruth;
+    document.getElementById('acc-pred').style.color = accuracy === 1 ? '#4ade80' : '#f87171';
+    document.getElementById('acc-pred').textContent = predColored;
+    document.getElementById('acc-gt-section').style.display = 'block';
+  } else {
+    // Custom upload — show model confidence (no ground truth available)
+    const confs = ocrData.per_digit_confidence || [];
+    const avg   = confs.length > 0 ? confs.reduce((a, b) => a + b, 0) / confs.length : 0;
+    log(`✓ Avg model confidence: ${fmt(avg)}`, 'done');
+    document.getElementById('acc-clean').textContent = fmt(avg);
+    document.getElementById('acc-fraction').textContent = `avg over ${confs.length} digit${confs.length !== 1 ? 's' : ''}`;
+    document.querySelector('#accuracy-card .panel-label').textContent = 'Model Confidence — This Image';
+    document.getElementById('acc-gt-section').style.display = 'none';
+  }
+  document.getElementById('accuracy-card').style.display = 'block';
+
+  runBtn.disabled = false;
+  statusLine.textContent = 'Done';
+}
+</script>
+</body>
+</html>
