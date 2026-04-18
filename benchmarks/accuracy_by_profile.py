@@ -1,9 +1,3 @@
-"""
-Accuracy benchmark: posts digit-strip images to /ocr for each noise profile.
-Generates synthetic test strips using torchvision MNIST val set.
-Reports character-level accuracy per profile.
-"""
-
 import sys
 import os
 import io
@@ -12,14 +6,13 @@ import torch
 import torchvision
 import numpy as np
 
-# Allow importing augment functions from the OCR service
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'ocr-service'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'ocr-service', 'app'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'ocr-service','app'))
 
 from app.augment import apply_gaussian, apply_salt_and_pepper
 
 OCR_URL = "http://localhost:8001/ocr"
-N_SAMPLES = 200
+N_SAMP = 200
 
 PROFILES = [
     ("clean", None),
@@ -29,7 +22,6 @@ PROFILES = [
 
 
 def load_mnist_val():
-    """Load MNIST validation (test) set, return list of (tensor, label)."""
     dataset = torchvision.datasets.MNIST(
         root=os.path.join(os.path.dirname(__file__), '..', '.mnist_cache'),
         train=False,
@@ -39,10 +31,8 @@ def load_mnist_val():
     return dataset
 
 
-def tensor_to_png_bytes(tensor: torch.Tensor) -> bytes:
-    """Convert a (1, 28, 28) float tensor [0,1] to PNG bytes."""
+def to_png(tensor: torch.Tensor) -> bytes:
     from PIL import Image
-    # Convert to uint8 numpy array
     arr = (tensor.squeeze(0).numpy() * 255).astype(np.uint8)
     img = Image.fromarray(arr, mode='L')
     buf = io.BytesIO()
@@ -53,65 +43,45 @@ def tensor_to_png_bytes(tensor: torch.Tensor) -> bytes:
 
 def run_benchmark():
     dataset = load_mnist_val()
-
-    # Use a fixed random seed for reproducibility
     rng = torch.Generator()
     rng.manual_seed(42)
 
-    # Pre-select indices for all profiles (same pool, different augmentation)
-    indices = torch.randperm(len(dataset), generator=rng)[:N_SAMPLES].tolist()
+    idxs = torch.randperm(len(dataset), generator=rng)[:N_SAMP].tolist()  # fixed subset
 
-    # Pre-load images and labels
-    images = []
-    labels = []
-    for idx in indices:
-        img_tensor, label = dataset[idx]  # img_tensor: (1, 28, 28)
-        images.append(img_tensor)
-        labels.append(label)
+    imgs,lbls = [],[]
+    for idx in idxs:
+        img_t,lbl = dataset[idx]
+        imgs.append(img_t)
+        lbls.append(lbl)
 
-    images_batch = torch.stack(images)  # (N, 1, 28, 28)
+    img_batch = torch.stack(imgs)  # (N,1,28,28)
 
-    print(f"{'Profile':<20} {'Accuracy':<10}")
-    print("-" * 30)
-
-    for profile_name, augment_fn in PROFILES:
-        if augment_fn is None:
-            augmented = images_batch.clone()
-        else:
-            augmented = augment_fn(images_batch)
-
+    for prof_name,aug_fn in PROFILES:
+        aug = img_batch.clone() if aug_fn is None else aug_fn(img_batch)  # apply noise
         correct = 0
         total = 0
 
-        for i in range(N_SAMPLES):
-            img_tensor = augmented[i]  # (1, 28, 28)
-            label = labels[i]
-
-            png_bytes = tensor_to_png_bytes(img_tensor)
+        for i in range(N_SAMP):
+            img_t = aug[i]
+            lbl = lbls[i]
+            png = to_png(img_t)
 
             try:
-                response = requests.post(
+                resp = requests.post(
                     OCR_URL,
-                    files={"file": ("digit.png", io.BytesIO(png_bytes), "image/png")},
+                    files={"file": ("digit.png", io.BytesIO(png), "image/png")},
                     timeout=10,
                 )
-                response.raise_for_status()
-                data = response.json()
-                text = data.get("text", "").strip()
-
-                # For a single 28x28 digit image, expect exactly one digit back
-                if text == str(label):
+                resp.raise_for_status()
+                text = resp.json().get("text","").strip()
+                if text == str(lbl):  # single digit image -> expect one digit back
                     correct += 1
-                # else: wrong prediction or segmentation failure → incorrect
-
-            except requests.RequestException as e:
-                # Service unavailable or error — count as incorrect
+            except requests.RequestException:
                 pass
-
             total += 1
 
-        accuracy = correct / total if total > 0 else 0.0
-        print(f"{profile_name:<20} {accuracy:.4f}")
+        acc = correct/total if total > 0 else 0.0
+        print(f"{prof_name}: {acc:.4f}")
 
 
 if __name__ == "__main__":

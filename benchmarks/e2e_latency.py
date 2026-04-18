@@ -1,8 +1,3 @@
-"""
-E2E latency benchmark: times the full pipeline (image → /ocr → /compress → /decompress).
-Reports p50, p95, p99 latency in milliseconds.
-"""
-
 import io
 import os
 import time
@@ -15,12 +10,11 @@ OCR_URL = "http://localhost:8001/ocr"
 COMPRESS_URL = "http://localhost:8002/compress"
 DECOMPRESS_URL = "http://localhost:8002/decompress"
 
-N_SAMPLES = 100
-DIGITS_PER_STRIP = 4
+N_SAMP = 100
+DPS = 4  # digits per strip
 
 
 def load_mnist_val():
-    """Load MNIST validation (test) set."""
     dataset = torchvision.datasets.MNIST(
         root=os.path.join(os.path.dirname(__file__), '..', '.mnist_cache'),
         train=False,
@@ -31,21 +25,15 @@ def load_mnist_val():
 
 
 def build_digit_strip(dataset, rng: torch.Generator) -> bytes:
-    """
-    Pick 4 random MNIST images and concatenate them horizontally into a
-    28x112 grayscale PNG. Returns PNG bytes.
-    """
+    # pick DPS random digits and concatenate them side by side -> PNG bytes
     from PIL import Image
-
-    indices = torch.randint(0, len(dataset), (DIGITS_PER_STRIP,), generator=rng).tolist()
+    idxs = torch.randint(0, len(dataset), (DPS,), generator=rng).tolist()
     strips = []
-    for idx in indices:
-        img_tensor, _ = dataset[idx]  # (1, 28, 28)
-        arr = (img_tensor.squeeze(0).numpy() * 255).astype("uint8")
+    for idx in idxs:
+        img_t,_ = dataset[idx]
+        arr = (img_t.squeeze(0).numpy() * 255).astype("uint8")
         strips.append(arr)
-
-    # Concatenate horizontally: shape (28, 28*4) = (28, 112)
-    combined = np.concatenate(strips, axis=1)
+    combined = np.concatenate(strips, axis=1)  # horizontal concat
     img = Image.fromarray(combined, mode='L')
     buf = io.BytesIO()
     img.save(buf, format='PNG')
@@ -53,8 +41,8 @@ def build_digit_strip(dataset, rng: torch.Generator) -> bytes:
     return buf.read()
 
 
-def percentile(data: list, p: float) -> float:
-    return float(np.percentile(data, p))
+def pct(data: list, p: float) -> float:
+    return float(np.percentile(data,p))
 
 
 def run_benchmark():
@@ -62,78 +50,53 @@ def run_benchmark():
     rng = torch.Generator()
     rng.manual_seed(0)
 
-    total_times = []
-    ocr_times = []
-    compress_times = []
-    decompress_times = []
+    t_tot,t_ocr,t_comp,t_dec = [],[],[],[]  # timing buckets
 
-    print(f"Running E2E latency benchmark — N={N_SAMPLES} samples...")
+    print(f"running e2e benchmark n={N_SAMP}...")
 
-    for i in range(N_SAMPLES):
-        png_bytes = build_digit_strip(dataset, rng)
+    for i in range(N_SAMP):
+        png = build_digit_strip(dataset, rng)
+        t_start = time.perf_counter()
 
-        t_total_start = time.perf_counter()
-
-        # --- Step a: OCR ---
+        # ocr: image -> text
         t0 = time.perf_counter()
         try:
             resp = requests.post(
                 OCR_URL,
-                files={"file": ("strip.png", io.BytesIO(png_bytes), "image/png")},
+                files={"file": ("strip.png", io.BytesIO(png), "image/png")},
                 timeout=15,
             )
             resp.raise_for_status()
-            ocr_data = resp.json()
-            text = ocr_data.get("text", "")
+            text = resp.json().get("text","")
         except requests.RequestException:
             text = "0 0 0 0"  # fallback so pipeline continues
-        t_ocr = (time.perf_counter() - t0) * 1000
+        t_ocr.append((time.perf_counter()-t0)*1000)
 
-        # --- Step b: Compress ---
+        # compress the text
         t0 = time.perf_counter()
+        c_b64 = ""
         try:
-            resp = requests.post(
-                COMPRESS_URL,
-                json={"text": text},
-                timeout=10,
-            )
+            resp = requests.post(COMPRESS_URL, json={"text": text}, timeout=10)
             resp.raise_for_status()
-            compress_data = resp.json()
-            compressed_b64 = compress_data.get("compressed_b64", "")
-        except requests.RequestException:
-            compressed_b64 = ""
-        t_compress = (time.perf_counter() - t0) * 1000
-
-        # --- Step c: Decompress ---
-        t0 = time.perf_counter()
-        try:
-            if compressed_b64:
-                resp = requests.post(
-                    DECOMPRESS_URL,
-                    json={"compressed_b64": compressed_b64},
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                decompress_data = resp.json()
-                recovered_text = decompress_data.get("text", "")
+            c_b64 = resp.json().get("compressed_b64","")
         except requests.RequestException:
             pass
-        t_decompress = (time.perf_counter() - t0) * 1000
+        t_comp.append((time.perf_counter()-t0)*1000)
 
-        t_total = (time.perf_counter() - t_total_start) * 1000
+        # decompress to verify roundtrip
+        t0 = time.perf_counter()
+        try:
+            if c_b64:
+                resp = requests.post(DECOMPRESS_URL, json={"compressed_b64": c_b64}, timeout=10)
+                resp.raise_for_status()
+        except requests.RequestException:
+            pass
+        t_dec.append((time.perf_counter()-t0)*1000)
 
-        total_times.append(t_total)
-        ocr_times.append(t_ocr)
-        compress_times.append(t_compress)
-        decompress_times.append(t_decompress)
+        t_tot.append((time.perf_counter()-t_start)*1000)
 
-    print(f"\nLatency (ms) — N={N_SAMPLES} samples")
-    print(f"{'p50:':<20} {percentile(total_times, 50):.1f}")
-    print(f"{'p95:':<20} {percentile(total_times, 95):.1f}")
-    print(f"{'p99:':<20} {percentile(total_times, 99):.1f}")
-    print(f"{'ocr_p50:':<20} {percentile(ocr_times, 50):.1f}")
-    print(f"{'compress_p50:':<20} {percentile(compress_times, 50):.1f}")
-    print(f"{'decompress_p50:':<20} {percentile(decompress_times, 50):.1f}")
+    print(f"p50={pct(t_tot,50):.1f} p95={pct(t_tot,95):.1f} p99={pct(t_tot,99):.1f}")
+    print(f"ocr_p50={pct(t_ocr,50):.1f} comp_p50={pct(t_comp,50):.1f} dec_p50={pct(t_dec,50):.1f}")
 
 
 if __name__ == "__main__":

@@ -1,22 +1,12 @@
-"""
-OCR Service FastAPI application.
-Accepts image uploads, segments digits, runs CNN inference, returns recognized text.
-"""
-
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import io
-import json
-import os
-import sys
-import time
+import io, json, os, sys, time
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(__file__))  # so local imports work
 
 import torch
 from PIL import Image, UnidentifiedImageError
-
 from model import DigitCNN, NUM_CLASSES
 from segment import segment_digits
 
@@ -24,29 +14,25 @@ app = FastAPI(title="OCR Service")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080", "http://127.0.0.1:8080"],
+    allow_origins=["http://localhost:8080","http://127.0.0.1:8080"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Paths
-MODEL_PATH = os.path.join(os.path.dirname(__file__), '..', 'model.pt')
-METRICS_PATH = os.path.join(os.path.dirname(__file__), '..', 'eval_metrics.json')
+MDL_PATH = os.path.join(os.path.dirname(__file__), '..', 'model.pt')
+MET_PATH = os.path.join(os.path.dirname(__file__), '..', 'eval_metrics.json')
 
-# Device selection
-device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")  # pick gpu if available
 
-# Load model at startup
 model = DigitCNN().to(device)
-model_loaded = False
+mdl_ok = False  # model ready
 
-if os.path.exists(MODEL_PATH):
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+if os.path.exists(MDL_PATH):
+    model.load_state_dict(torch.load(MDL_PATH, map_location=device))  # load saved weights
     model.eval()
-    model_loaded = True
+    mdl_ok = True
 
 
-# Pydantic response model
 class OCRResponse(BaseModel):
     text: str
     per_digit_confidence: list[float]
@@ -56,107 +42,92 @@ class OCRResponse(BaseModel):
 
 @app.get("/healthz")
 def health():
-    return {"status": "ok", "model_loaded": model_loaded}
+    return {"status": "ok", "model_loaded": mdl_ok}
 
 
 @app.post("/ocr", response_model=OCRResponse)
 async def ocr(file: UploadFile = File(...)):
-    if not model_loaded:
-        raise HTTPException(
-            status_code=503,
-            detail="Model not trained yet. Run train.py first."
-        )
+    if not mdl_ok:
+        raise HTTPException(status_code=503, detail="Model not trained yet. Run train.py first.")
 
-    # Read and parse image
     try:
         contents = await file.read()
         image = Image.open(io.BytesIO(contents))
     except (UnidentifiedImageError, Exception) as e:
         raise HTTPException(status_code=422, detail=f"Invalid image file: {str(e)}")
 
-    start_time = time.time()
+    t0 = time.time()
+    dig_tens = segment_digits(image)  # list of (1,28,28) tensors
 
-    # Segment digits
-    digit_tensors = segment_digits(image)
+    if not dig_tens:
+        lat = (time.time() - t0) * 1000
+        return OCRResponse(text="", per_digit_confidence=[], digit_count=0, latency_ms=round(lat,2))
 
-    if not digit_tensors:
-        latency_ms = (time.time() - start_time) * 1000
-        return OCRResponse(
-            text="",
-            per_digit_confidence=[],
-            digit_count=0,
-            latency_ms=round(latency_ms, 2),
-        )
+    batch = torch.stack(dig_tens).to(device)  # (N,1,28,28)
 
-    # Batch all tensors into a single forward pass
-    # Each tensor is (1, 28, 28); stack to (N, 1, 28, 28)
-    batch = torch.stack(digit_tensors).to(device)
-
+    # run all digits in a single forward pass
     with torch.no_grad():
-        logits = model(batch)  # (N, 10)
-        probs = torch.softmax(logits, dim=1)  # (N, 10)
-        predicted_classes = probs.argmax(dim=1)  # (N,)
-        confidences = probs.max(dim=1).values  # (N,)
+        logits = model(batch)
+        probs = torch.softmax(logits, dim=1)
+        pred_cls = probs.argmax(dim=1)       # highest prob class per digit
+        confs = probs.max(dim=1).values      # confidence score per digit
 
-    latency_ms = (time.time() - start_time) * 1000
-
-    predicted_digits = predicted_classes.cpu().tolist()
-    confidence_list = [round(float(c), 4) for c in confidences.cpu().tolist()]
-
-    text = " ".join(str(d) for d in predicted_digits)
+    lat = (time.time() - t0) * 1000
+    pred_digs = pred_cls.cpu().tolist()  # pull off gpu
+    conf_list = [round(float(c),4) for c in confs.cpu().tolist()]
+    text = " ".join(str(d) for d in pred_digs)
 
     return OCRResponse(
         text=text,
-        per_digit_confidence=confidence_list,
-        digit_count=len(predicted_digits),
-        latency_ms=round(latency_ms, 2),
+        per_digit_confidence=conf_list,
+        digit_count=len(pred_digs),
+        latency_ms=round(lat,2),
     )
 
 
 @app.get("/metrics")
 def metrics():
-    if not os.path.exists(METRICS_PATH):
+    if not os.path.exists(MET_PATH):
         return {"error": "not trained yet"}
-    with open(METRICS_PATH, "r") as f:
+    with open(MET_PATH,"r") as f:
         return json.load(f)
 
 
 @app.get("/test-sample")
 def test_sample(n: int = 8):
-    """Generate a random MNIST digit strip with known ground-truth labels."""
     import random, base64
     import numpy as np
     from torchvision import datasets, transforms
     from PIL import Image as PILImage
 
     data_root = os.path.join(os.path.dirname(__file__), '..', 'data')
-    val_ds = datasets.MNIST(
+    v_ds = datasets.MNIST(
         root=data_root, train=False, download=False,
         transform=transforms.Compose([transforms.ToTensor()])
     )
-    indices = random.sample(range(len(val_ds)), min(n, len(val_ds)))
-    digit_size = 28  # native MNIST size — no resize, no quality loss
-    gap = 8
-    strip_w = digit_size * len(indices) + gap * (len(indices) - 1)
-    strip = PILImage.new('L', (strip_w, digit_size), color=0)  # black background (MNIST format)
+    idxs = random.sample(range(len(v_ds)), min(n,len(v_ds)))
+    dsize=28  # mnist native size
+    gap=8
+    sw = dsize*len(idxs) + gap*(len(idxs)-1)  # strip width
+    strip = PILImage.new('L', (sw,dsize), color=0)  # blank black canvas
 
-    labels = []
-    for i, idx in enumerate(indices):
-        img_t, label = val_ds[idx]
-        arr = (img_t.squeeze().numpy() * 255).astype(np.uint8)  # white digit on black — native MNIST
-        digit_img = PILImage.fromarray(arr)  # no resize — keep 28x28 intact
-        strip.paste(digit_img, (i * (digit_size + gap), 0))
-        labels.append(int(label))
+    lbls = []
+    for i,idx in enumerate(idxs):
+        img_t,label = v_ds[idx]
+        arr = (img_t.squeeze().numpy() * 255).astype(np.uint8)
+        dimg = PILImage.fromarray(arr)
+        strip.paste(dimg, (i*(dsize+gap),0))  # place digit at its x offset
+        lbls.append(int(label))
 
     buf = io.BytesIO()
     strip.save(buf, format='PNG')
     img_b64 = base64.b64encode(buf.getvalue()).decode()
-    return {"image_b64": img_b64, "ground_truth": " ".join(str(l) for l in labels)}
+    return {"image_b64": img_b64, "ground_truth": " ".join(str(l) for l in lbls)}
 
 
 @app.get("/live-accuracy")
 def live_accuracy():
-    if not model_loaded:
+    if not mdl_ok:
         raise HTTPException(status_code=503, detail="Model not loaded.")
 
     from torchvision import datasets, transforms
@@ -164,20 +135,20 @@ def live_accuracy():
     from augment import apply_gaussian, apply_salt_and_pepper
 
     data_root = os.path.join(os.path.dirname(__file__), '..', 'data')
-    transform = transforms.Compose([transforms.ToTensor()])
-    val_ds = datasets.MNIST(root=data_root, train=False, download=False, transform=transform)
-    loader = DataLoader(val_ds, batch_size=500, shuffle=True)
-    x, y = next(iter(loader))
+    tfm = transforms.Compose([transforms.ToTensor()])
+    v_ds = datasets.MNIST(root=data_root, train=False, download=False, transform=tfm)
+    loader = DataLoader(v_ds, batch_size=500, shuffle=True)
+    x,y = next(iter(loader))  # grab one batch
 
     model.eval()
     with torch.no_grad():
-        y_dev = y.to(device)
-        acc_clean = (model(x.to(device)).argmax(dim=1) == y_dev).float().mean().item()
-        acc_gaussian = (model(apply_gaussian(x).to(device)).argmax(dim=1) == y_dev).float().mean().item()
-        acc_sp = (model(apply_salt_and_pepper(x).to(device)).argmax(dim=1) == y_dev).float().mean().item()
+        yd = y.to(device)
+        acc_c  = (model(x.to(device)).argmax(dim=1) == yd).float().mean().item()
+        acc_g  = (model(apply_gaussian(x).to(device)).argmax(dim=1) == yd).float().mean().item()
+        acc_sp = (model(apply_salt_and_pepper(x).to(device)).argmax(dim=1) == yd).float().mean().item()
 
     return {
-        "accuracy_clean": round(acc_clean, 4),
-        "accuracy_gaussian": round(acc_gaussian, 4),
-        "accuracy_salt_and_pepper": round(acc_sp, 4),
+        "accuracy_clean": round(acc_c,4),
+        "accuracy_gaussian": round(acc_g,4),
+        "accuracy_salt_and_pepper": round(acc_sp,4),
     }
